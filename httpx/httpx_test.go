@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 )
 
@@ -59,6 +60,73 @@ func TestServeMux(t *testing.T) {
 	})
 }
 
+func TestServeMux_WithGlobalChain(t *testing.T) {
+
+	tracer := newTracer(t)
+	chain := NewChain(tracer.factory(1), tracer.factory(2))
+
+	mux := NewServeMuxWithChain(chain)
+
+	h := &mockHandler{t: t}
+	mux.HandleFunc(http.MethodGet, "/a/b/c", h.Handler(nil))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/a/b/c", nil)
+	mux.ServeHTTP(rec, req)
+
+	h.verifyMethod(http.MethodGet)
+	h.verifyPath("/a/b/c")
+	h.verifyNumCalls(1)
+	h.verifyParams()
+
+	expectedExecutionTrace := []int{1, 2, 2, 1}
+	tracer.verifyExecutionTrace(expectedExecutionTrace)
+}
+
+func TestServeMux_WithLocalChain(t *testing.T) {
+
+	tracer := newTracer(t)
+
+	mux := NewServeMux()
+
+	h := &mockHandler{t: t}
+	mux.HandleFunc(http.MethodGet, "/a/b/c", h.Handler(nil), tracer.factory(1), tracer.factory(2))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/a/b/c", nil)
+	mux.ServeHTTP(rec, req)
+
+	h.verifyMethod(http.MethodGet)
+	h.verifyPath("/a/b/c")
+	h.verifyNumCalls(1)
+	h.verifyParams()
+
+	expectedExecutionTrace := []int{1, 2, 2, 1}
+	tracer.verifyExecutionTrace(expectedExecutionTrace)
+}
+
+func TestServeMux_WithGlobalAndLocalChain(t *testing.T) {
+
+	tracer := newTracer(t)
+
+	mux := NewServeMuxWithChain(NewChain(tracer.factory(1), tracer.factory(2)))
+
+	h := &mockHandler{t: t}
+	mux.HandleFunc(http.MethodGet, "/a/b/c", h.Handler(nil), tracer.factory(3), tracer.factory(4))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/a/b/c", nil)
+	mux.ServeHTTP(rec, req)
+
+	h.verifyMethod(http.MethodGet)
+	h.verifyPath("/a/b/c")
+	h.verifyNumCalls(1)
+	h.verifyParams()
+
+	expectedExecutionTrace := []int{1, 2, 3, 4, 4, 3, 2, 1}
+	tracer.verifyExecutionTrace(expectedExecutionTrace)
+}
+
 type param struct {
 	key, val string
 }
@@ -103,5 +171,38 @@ func (m *mockHandler) Handler(returnsError error) HandlerFunc {
 		m.params = ParamsFromContext(r.Context())
 		m.path = r.URL.Path
 		return returnsError
+	}
+}
+
+type tracer struct {
+	t              *testing.T
+	executionTrace []int
+}
+
+func newTracer(t *testing.T) *tracer {
+	return &tracer{
+		t:              t,
+		executionTrace: make([]int, 0),
+	}
+}
+
+func (t *tracer) factory(index int) Middleware {
+	return func(handler Handler) HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) error {
+			t.executionTrace = append(t.executionTrace, index)
+
+			defer func() {
+				t.executionTrace = append(t.executionTrace, index)
+			}()
+
+			return handler.ServeHTTP(w, r)
+		}
+	}
+}
+
+func (t *tracer) verifyExecutionTrace(expectedExecutionTrace []int) {
+	t.t.Helper()
+	if !reflect.DeepEqual(t.executionTrace, expectedExecutionTrace) {
+		t.t.Errorf("expected execution trace is %v; got %v", expectedExecutionTrace, t.executionTrace)
 	}
 }

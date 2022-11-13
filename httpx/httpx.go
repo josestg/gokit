@@ -37,7 +37,7 @@ func contextWithParams(ctx context.Context, p Params) context.Context {
 // This is useful to remove redundancies when handling an error into
 // http error response.
 type Handler interface {
-	// ServeHTTP handles incoming http request an respond to w.
+	// ServeHTTP handles incoming http request a response to w.
 	ServeHTTP(w http.ResponseWriter, r *http.Request) error
 }
 
@@ -48,29 +48,40 @@ type HandlerFunc func(w http.ResponseWriter, r *http.Request) error
 // ServeHTTP calls fn(w, r)
 func (fn HandlerFunc) ServeHTTP(w http.ResponseWriter, r *http.Request) error { return fn(w, r) }
 
-// ServeMux is an http router.
+// ServeMux is a http router.
 type ServeMux struct {
 	internal *httprouter.Router
+	chain    *Chain
 }
 
 // NewServeMux creates a new ServeMux.
 func NewServeMux() *ServeMux {
 	return &ServeMux{
 		internal: httprouter.New(),
+		chain:    NewChain(),
+	}
+
+}
+
+// NewServeMuxWithChain creates a new ServeMux with a chain of middlewares.
+func NewServeMuxWithChain(chain *Chain) *ServeMux {
+	return &ServeMux{
+		internal: httprouter.New(),
+		chain:    chain,
 	}
 }
 
 // Handle registers a new Handler.
-func (mux *ServeMux) Handle(method, path string, handler Handler) {
+func (mux *ServeMux) Handle(method, path string, handler Handler, middlewares ...Middleware) {
 	mux.internal.Handle(method, path, func(w http.ResponseWriter, r *http.Request, p httprouter.Params) error {
 		ctx := contextWithParams(r.Context(), Params{p: p})
-		return handler.ServeHTTP(w, r.WithContext(ctx))
+		return mux.chain.Extend(middlewares...).Then(handler).ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
 // HandleFunc registers an ordinary function as a Handler.
-func (mux *ServeMux) HandleFunc(method, path string, fn HandlerFunc) {
-	mux.Handle(method, path, fn)
+func (mux *ServeMux) HandleFunc(method, path string, fn HandlerFunc, middlewares ...Middleware) {
+	mux.Handle(method, path, fn, middlewares...)
 }
 
 // ServeHTTP implements the http.Handler to make it compatible with
